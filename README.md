@@ -12,5 +12,11 @@
 ## Introduction
 *TBD*
 
-## Experimental Results from Paper
-To run the scripts you will need to clone the repo and install it locally which you can do with *TBD*
+## How to run the code
+```
+git clone https://github.com/davidwhogg/DimensionlessScalarEMLP.git
+cd DimensionlessScalarEMLP
+pip install -e .
+pip install --upgrade jaxlib
+python3 experiments/hnn_scalars.py #(this takes a long time)
+```
