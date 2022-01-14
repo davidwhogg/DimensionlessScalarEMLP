@@ -32,7 +32,6 @@ def comp_outer_products(x):
     scalars = torch.einsum('bik,bjl->bijkl', x, x) #[N, n, n, dim, dim]
     return scalars.view(N,-1)
 
-
 def dataset_transform(data):
     """
     data: numpy dataset of two attributes: data.X, data.Y

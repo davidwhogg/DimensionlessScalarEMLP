@@ -1,7 +1,5 @@
-import jax.numpy as jnp
-from jax import grad, jit, vmap, jacfwd, jvp, vjp
-from jax import random
 import numpy as np
+from jax import grad, jit, vmap, jacfwd, jvp, vjp, random
 import jax.numpy as jnp
 from jax.experimental.ode import odeint
 from torch.utils.data import Dataset
@@ -10,7 +8,6 @@ from emlp.reps import T,Scalar
 from oil.utils.utils import Named
 from oil.tuning.configGenerator import flatten_dict
 import os
-import torch
 import torch
 import torch.nn as nn
 from oil.utils.utils import export
@@ -78,7 +75,7 @@ class HamiltonianDataset(Dataset):
             n_systems (int): total number of trajectory chunks that makeup the dataset.
             chunk_len (int): the number of timepoints at which each chunk is evaluated
             dt (float): the spacing of the evaluation points (not the integrator step size which is set by tol=1e-4)
-            integration_time (float): The integration time for evaluation rollouts and also
+            integration_time (float): T
                 the total integration time from which each trajectory chunk is randomly sampled
             regen (bool): whether or not to regenerate and overwrite any datasets cached to disk
                 with the same arguments. If false, will use trajectories saved at {filename}
@@ -93,10 +90,10 @@ class HamiltonianDataset(Dataset):
         if os.path.exists(filename) and not regen:
             Zs = torch.load(filename)
         else:
-            zs = self.generate_trajectory_data(n_systems, dt, integration_time)
+            ts, zs, pars = self.generate_trajectory_data(n_systems, dt, integration_time)
             Zs = np.asarray(self.chunk_training_data(zs, chunk_len))
             os.makedirs(root_dir, exist_ok=True)
-            torch.save(Zs, filename)
+            torch.save((Zs, pars), filename)
         
         self.Zs = Zs
         self.T = np.asarray(jnp.arange(0, chunk_len*dt, dt))
@@ -112,17 +109,25 @@ class HamiltonianDataset(Dataset):
         return HamiltonianFlow(self.H,z0s, ts)
     
     def generate_trajectory_data(self, n_systems, dt, integration_time, bs=100):
-        """ Returns ts: (n_systems, traj_len) zs: (n_systems, traj_len, z_dim) """
+        """
+        Returns
+        ts: (n_systems, traj_len)
+        zs: (n_systems, traj_len, z_dim)
+        pars: (whatever)
+        """
         n_gen = 0; bs = min(bs, n_systems)
-        t_batches, z_batches = [], []
+        t_batches, z_batches, par_batches = [], [], []
         while n_gen < n_systems:
             z0s = self.sample_initial_conditions(bs)
+            zps = self.sample_parameters(bs)
+            par_batches.append(zps)
             ts = jnp.arange(0, integration_time, dt)
-            new_zs = BHamiltonianFlow(self.H,z0s, ts)
+            t_batches.append(ts)
+            new_zs = BHamiltonianFlow(self.H, z0s, ts)
             z_batches.append(new_zs)
             n_gen += bs
         zs = jnp.concatenate(z_batches, axis=0)[:n_systems]
-        return zs
+        return ts, zs, zps
 
     def chunk_training_data(self, zs, chunk_len):
         batch_size, traj_len, *z_dim = zs.shape
@@ -163,7 +168,7 @@ class SHO(HamiltonianDataset):
         return ke+pe
     def sample_initial_conditions(self,bs):
         return np.random.randn(bs,2)
-    
+
 class DoubleSpringPendulum(HamiltonianDataset):
     """ The double spring pendulum dataset described in the paper."""
     def __init__(self,*args,**kwargs):
@@ -173,16 +178,31 @@ class DoubleSpringPendulum(HamiltonianDataset):
         self.symmetry = O2eR3()
         self.stats = (0,1,0,1)
     def H(self,z):
-        g=1
-        m1,m2,k1,k2,l1,l2 = 1,1,1,1,1,1
         x,p = unpack(z)
         p1,p2 = unpack(p)
         x1,x2 = unpack(x)
-        ke = .5*(p1**2).sum(-1)/m1 + .5*(p2**2).sum(-1)/m2
-        pe = .5*k1*(jnp.sqrt((x1**2).sum(-1))-l1)**2 
-        pe += k2*(jnp.sqrt(((x1-x2)**2).sum(-1))-l2)**2
-        pe += m1*g*x1[...,2]+m2*g*x2[...,2]
+        ke = .5*(p1**2).sum(-1)/self.m1 + .5*(p2**2).sum(-1)/self.m2
+        pe = .5*self.k1*(jnp.sqrt((x1**2).sum(-1))-self.l1)**2 
+        pe += self.k2*(jnp.sqrt(((x1-x2)**2).sum(-1))-self.l2)**2
+        pe += self.m1*self.g*x1[...,2]+self.m2*self.g*x2[...,2]
         return (ke + pe).sum()
+    def sample_parameters(self,bs):
+        g = np.ones(bs)
+        self.g = g
+        m1 = np.ones(bs)
+        self.m1 = m1
+        m2 = np.ones(bs)
+        self.m2 = m2
+        k1 = np.ones(bs)
+        self.k1 = k1
+        k2 = np.ones(bs)
+        self.k2 = k2
+        l1 = np.ones(bs)
+        self.l1 = l1
+        l2 = np.ones(bs)
+        self.l2 = l2
+        z0 = np.concatenate([g, m1, m2, k1, k2, l1, l2]) # HOGG: THIS LINE MAY BE WRONG
+        return z0
     def sample_initial_conditions(self,bs):
         x1 = np.array([0,0,-1.5]) +.2*np.random.randn(bs,3)
         x2= np.array([0,0,-3.]) +.2*np.random.randn(bs,3)
@@ -192,9 +212,6 @@ class DoubleSpringPendulum(HamiltonianDataset):
     @property
     def animator(self):
         return CoupledPendulumAnimation
-
-
-
 
 class IntegratedDynamicsTrainer(Regressor):
     """ A trainer for training the Hamiltonian Neural Networks. Feel free to use your own instead."""
